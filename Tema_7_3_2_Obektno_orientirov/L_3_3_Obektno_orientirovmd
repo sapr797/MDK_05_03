@@ -1,0 +1,410 @@
+# Лекция 3.3: Объектно-ориентированное тестирование ИС. Особенности и подходы
+
+**Дисциплина:** МДК 05.03 Тестирование информационных систем  
+**Семестр:** 7  
+**Тема 3.2:** Объектно-ориентированное тестирование  
+**Тип занятия:** Лекция (2 часа)
+
+---
+
+## Цель лекции
+
+Изучить особенности объектно-ориентированного тестирования информационных систем, освоить специфические подходы и методы тестирования ОО-кода, понять отличия от процедурного тестирования.
+
+## Планируемые результаты (по ФГОС СПО)
+
+После этой лекции вы сможете:
+1. Объяснить особенности тестирования объектно-ориентированных систем (ОК 01, ОК 02).
+2. Применять подходы к тестированию классов, наследования и полиморфизма (ПК 3.2, ПК 3.3).
+3. Тестировать инкапсуляцию и состояние объектов (ПК 3.2).
+4. Выявлять типичные ошибки в ОО-коде (ПК 3.3).
+
+---
+
+## 1. Почему ОО-тестирование отличается от процедурного?
+
+### 1.1 Основные отличия
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ПРОЦЕДУРНОЕ vs ОБЪЕКТНО-ОРИЕНТИРОВАННОЕ ТЕСТИРОВАНИЕ │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ │
+│ ПРОЦЕДУРНОЕ ТЕСТИРОВАНИЕ ОБЪЕКТНО-ОРИЕНТИРОВАННОЕ │
+│ ┌─────────────────────────┐ ┌─────────────────────────┐ │
+│ │ Функция → Результат │ │ Объект → Состояние │ │
+│ │ Вход → Выход │ │ Метод → Состояние + Выход│ │
+│ │ Линейная логика │ │ Взаимодействие объектов │ │
+│ └─────────────────────────┘ └─────────────────────────┘ │
+│ │
+│ ДОПОЛНИТЕЛЬНЫЕ СЛОЖНОСТИ ОО-ТЕСТИРОВАНИЯ: │
+│ • Инкапсуляция (скрытое состояние) │
+│ • Наследование (поведение из родительского класса) │
+│ • Полиморфизм (разное поведение через единый интерфейс) │
+│ • Состояние (результат зависит от истории вызовов) │
+│ • Взаимодействие (объекты вызывают друг друга) │
+│ │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+text
+
+### 1.2 Уровни ОО-тестирования
+
+| Уровень | Что тестируется | Сложность |
+|:---|:---|:---|
+| **Метод** | Отдельный метод класса | Низкая |
+| **Класс** | Все методы класса, инварианты | Средняя |
+| **Кластер** | Взаимодействие нескольких классов | Высокая |
+| **Система** | Вся система (объектная модель) | Очень высокая |
+
+---
+
+## 2. Особенности тестирования инкапсуляции
+
+### 2.1 Проблема: скрытое состояние
+
+Инкапсуляция скрывает внутреннее состояние объекта. Это хорошо для дизайна, но создаёт трудности для тестирования.
+
+```python
+class BankAccount:
+    def __init__(self):
+        self._balance = 0      # Защищённый атрибут
+        self.__pin = "0000"    # Приватный атрибут (name mangling)
+    
+    def deposit(self, amount):
+        self._balance += amount
+    
+    def get_balance(self):
+        return self._balance
+2.2 Подходы к тестированию инкапсуляции
+python
+# Подход 1: Тестирование через публичный интерфейс (рекомендуется)
+def test_balance_via_public_methods():
+    account = BankAccount()
+    account.deposit(100)
+    assert account.get_balance() == 100
+
+# Подход 2: Доступ к защищённым атрибутам (для отладки)
+def test_balance_via_protected():
+    account = BankAccount()
+    account._balance = 500  # Не рекомендуется, но возможно
+    assert account.get_balance() == 500
+
+# Подход 3: Доступ к приватным атрибутам через name mangling (не рекомендуется)
+def test_pin_via_private():
+    account = BankAccount()
+    # Имя изменено на _BankAccount__pin
+    assert account._BankAccount__pin == "0000"
+2.3 Тестирование getter/setter
+python
+class User:
+    def __init__(self, name: str):
+        self._name = name
+        self._age = 0
+    
+    @property
+    def name(self) -> str:
+        return self._name
+    
+    @property
+    def age(self) -> int:
+        return self._age
+    
+    @age.setter
+    def age(self, value: int):
+        if not 0 <= value <= 150:
+            raise ValueError("Invalid age")
+        self._age = value
+
+# Тесты
+def test_name_getter():
+    user = User("Alice")
+    assert user.name == "Alice"
+
+def test_age_setter_valid():
+    user = User("Bob")
+    user.age = 25
+    assert user.age == 25
+
+def test_age_setter_invalid():
+    user = User("Charlie")
+    with pytest.raises(ValueError, match="Invalid age"):
+        user.age = 200
+3. Особенности тестирования наследования
+3.1 Проблемы наследования
+text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    ПРОБЛЕМЫ ТЕСТИРОВАНИЯ НАСЛЕДОВАНИЯ                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Проблема 1: Унаследованные методы                                          │
+│   ├── Дочерний класс использует методы родителя                             │
+│   └── Нужно перетестировать поведение в контексте дочернего класса?         │
+│                                                                              │
+│   Проблема 2: Переопределённые методы                                        │
+│   ├── Дочерний класс меняет поведение                                        │
+│   └── Нужно тестировать новое поведение + соблюдение контракта              │
+│                                                                              │
+│   Проблема 3: Добавленные методы                                             │
+│   ├── Дочерний класс добавляет новую функциональность                        │
+│   └── Нужны новые тесты                                                      │
+│                                                                              │
+│   Проблема 4: Принцип подстановки Лисков (LSP)                              │
+│   ├── Дочерний класс должен быть заменяем родительским                       │
+│   └── Нужны полиморфные тесты                                                │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+3.2 Стратегия тестирования наследования
+python
+class Vehicle:
+    def __init__(self, brand: str, speed: int):
+        self.brand = brand
+        self.speed = speed
+    
+    def move(self) -> str:
+        return f"Vehicle {self.brand} is moving at {self.speed} km/h"
+    
+    def get_max_speed(self) -> int:
+        return self.speed
+
+
+class Car(Vehicle):
+    def __init__(self, brand: str, speed: int, doors: int):
+        super().__init__(brand, speed)
+        self.doors = doors
+    
+    def move(self) -> str:
+        return f"Car {self.brand} is driving at {self.speed} km/h"
+    
+    def honk(self) -> str:
+        return "Beep beep!"
+
+
+# === СТРАТЕГИЯ 1: Тесты родительского класса ===
+class TestVehicle:
+    def test_vehicle_move(self):
+        vehicle = Vehicle("Generic", 100)
+        assert "moving at 100 km/h" in vehicle.move()
+    
+    def test_vehicle_get_max_speed(self):
+        vehicle = Vehicle("Generic", 100)
+        assert vehicle.get_max_speed() == 100
+
+
+# === СТРАТЕГИЯ 2: Базовый тест для иерархии ===
+class BaseVehicleTest:
+    """Базовый класс для тестирования всех транспортных средств."""
+    
+    def create_vehicle(self) -> Vehicle:
+        raise NotImplementedError
+    
+    def test_move_returns_string(self):
+        vehicle = self.create_vehicle()
+        result = vehicle.move()
+        assert isinstance(result, str)
+        assert len(result) > 0
+    
+    def test_get_max_speed_returns_int(self):
+        vehicle = self.create_vehicle()
+        assert isinstance(vehicle.get_max_speed(), int)
+
+
+# === СТРАТЕГИЯ 3: Тесты дочернего класса (свои + унаследованные) ===
+class TestCar(BaseVehicleTest):
+    def create_vehicle(self) -> Vehicle:
+        return Car("Toyota", 180, 4)
+    
+    # Новые тесты для Car
+    def test_car_honk(self):
+        car = Car("Honda", 200, 2)
+        assert car.honk() == "Beep beep!"
+    
+    def test_car_doors(self):
+        car = Car("Ford", 150, 5)
+        assert car.doors == 5
+    
+    # Проверка полиморфного поведения
+    def test_car_move_override(self):
+        car = Car("BMW", 250, 4)
+        assert "driving" in car.move()
+    
+    # Тест LSP: Car должен вести себя как Vehicle
+    def test_car_lsp_compliance(self):
+        vehicle: Vehicle = Car("Audi", 220, 4)
+        assert isinstance(vehicle.move(), str)
+        assert vehicle.get_max_speed() == 220
+4. Особенности тестирования полиморфизма
+4.1 Тестирование полиморфного поведения
+python
+from abc import ABC, abstractmethod
+
+class PaymentProcessor(ABC):
+    @abstractmethod
+    def process(self, amount: float) -> dict:
+        pass
+    
+    @abstractmethod
+    def get_fee(self, amount: float) -> float:
+        pass
+
+
+class CreditCardProcessor(PaymentProcessor):
+    def process(self, amount: float) -> dict:
+        return {"status": "success", "method": "credit_card", "fee": self.get_fee(amount)}
+    
+    def get_fee(self, amount: float) -> float:
+        return amount * 0.025  # 2.5%
+
+
+class PayPalProcessor(PaymentProcessor):
+    def process(self, amount: float) -> dict:
+        return {"status": "success", "method": "paypal", "fee": self.get_fee(amount)}
+    
+    def get_fee(self, amount: float) -> float:
+        return amount * 0.035  # 3.5%
+
+
+# === ПОЛИМОРФНЫЕ ТЕСТЫ ===
+class BasePaymentProcessorTest:
+    """Базовые полиморфные тесты для всех процессоров."""
+    
+    def create_processor(self) -> PaymentProcessor:
+        raise NotImplementedError
+    
+    def test_process_returns_dict_with_status(self):
+        processor = self.create_processor()
+        result = processor.process(100)
+        assert isinstance(result, dict)
+        assert "status" in result
+        assert result["status"] == "success"
+    
+    def test_get_fee_returns_positive_float(self):
+        processor = self.create_processor()
+        fee = processor.get_fee(100)
+        assert isinstance(fee, float)
+        assert fee > 0
+
+
+class TestCreditCardProcessor(BasePaymentProcessorTest):
+    def create_processor(self) -> PaymentProcessor:
+        return CreditCardProcessor()
+    
+    def test_credit_card_specific_fee(self):
+        processor = CreditCardProcessor()
+        assert processor.get_fee(100) == 2.5
+    
+    def test_credit_card_method_in_result(self):
+        processor = CreditCardProcessor()
+        result = processor.process(100)
+        assert result["method"] == "credit_card"
+
+
+class TestPayPalProcessor(BasePaymentProcessorTest):
+    def create_processor(self) -> PaymentProcessor:
+        return PayPalProcessor()
+    
+    def test_paypal_specific_fee(self):
+        processor = PayPalProcessor()
+        assert processor.get_fee(100) == 3.5
+    
+    def test_paypal_method_in_result(self):
+        processor = PayPalProcessor()
+        result = processor.process(100)
+        assert result["method"] == "paypal"
+5. Тестирование взаимодействия объектов
+5.1 Проблема: зависимые объекты
+python
+class EmailService:
+    def send(self, to: str, subject: str, body: str) -> bool:
+        # Реальная отправка email
+        return True
+
+
+class NotificationService:
+    def __init__(self, email_service: EmailService):
+        self.email_service = email_service
+    
+    def notify_user(self, user_email: str, message: str):
+        return self.email_service.send(user_email, "Notification", message)
+5.2 Решение: мокирование зависимостей
+python
+class TestNotificationService:
+    def test_notify_user_sends_email(self):
+        # Создаём мок EmailService
+        mock_email = Mock(spec=EmailService)
+        mock_email.send.return_value = True
+        
+        service = NotificationService(mock_email)
+        result = service.notify_user("user@test.com", "Hello")
+        
+        assert result is True
+        mock_email.send.assert_called_once_with(
+            "user@test.com", "Notification", "Hello"
+        )
+    
+    def test_notify_user_handles_failure(self):
+        mock_email = Mock(spec=EmailService)
+        mock_email.send.return_value = False
+        
+        service = NotificationService(mock_email)
+        result = service.notify_user("user@test.com", "Hello")
+        
+        assert result is False
+6. Типичные ошибки в ОО-коде и их тестирование
+Ошибка	Описание	Как тестировать
+Состояние гонки	Изменение объекта из нескольких потоков	Многопоточные тесты
+Побочные эффекты	Метод меняет состояние, о котором тест не знает	Проверка состояния до/после
+Нарушение LSP	Дочерний класс не заменяет родительский	Полиморфные тесты
+Утечка памяти	Объекты не удаляются	Проверка ссылок
+Неверная инициализация	Объект в некорректном состоянии после создания	Проверка инвариантов
+7. Шпаргалка
+python
+# === ТЕСТИРОВАНИЕ ИНКАПСУЛЯЦИИ ===
+# Через публичные методы
+def test_public_interface():
+    obj = MyClass()
+    obj.public_method()
+    assert obj.public_getter() == expected
+
+# === ТЕСТИРОВАНИЕ НАСЛЕДОВАНИЯ ===
+# Базовый тест для иерархии
+class BaseTest:
+    def create(self):
+        raise NotImplementedError
+    
+    def test_common(self):
+        obj = self.create()
+        assert obj.common_method() == expected
+
+# === ТЕСТИРОВАНИЕ ПОЛИМОРФИЗМА ===
+def test_polymorphism():
+    objects = [Dog(), Cat()]
+    for obj in objects:
+        assert isinstance(obj.speak(), str)
+
+# === ТЕСТИРОВАНИЕ ВЗАИМОДЕЙСТВИЯ ===
+def test_interaction(mocker):
+    mock_dep = mocker.Mock()
+    service = Service(mock_dep)
+    service.do_something()
+    mock_dep.method.assert_called_once()
+Контрольные вопросы
+Чем ОО-тестирование отличается от процедурного?
+
+Какие уровни тестирования существуют в ОО-подходе?
+
+Как тестировать инкапсулированное состояние?
+
+Какие проблемы возникают при тестировании наследования?
+
+Как организовать тесты для иерархии классов?
+
+Что такое полиморфное тестирование?
+
+Как проверить соблюдение принципа LSP?
+
+Как тестировать взаимодействие объектов?
+
+Какие типичные ошибки в ОО-коде можно выявить тестами?
+
+Зачем нужны моки при тестировании взаимодействия?
+
+Следующее занятие: ПР 3.3 — Практическое объектно-ориентированное тестирование.
