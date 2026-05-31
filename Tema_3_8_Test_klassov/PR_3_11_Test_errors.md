@@ -899,8 +899,9 @@ class TestAppendToFile:
         
         with pytest.raises(PermissionError):
             FileHandler.append_to_file(str(file_path), "new line")
-Задание 3.4. Комплексный сценарий с несколькими ошибками (10 минут)
-python
+### Задание 3.4. Комплексный сценарий с несколькими ошибками (10 минут)
+
+```python
 class TestComplexErrorScenarios:
     """Комплексные сценарии с несколькими ошибками."""
     
@@ -946,4 +947,331 @@ class TestComplexErrorScenarios:
         assert "File not found" in message or str(file_path) in message
     
     def test_error_does_not_corrupt_state(self, tmp_path, monkeypatch):
-        """Ошибка не должна портить состояние системы
+        """Ошибка не должна портить состояние системы."""
+        file_path = tmp_path / "state.txt"
+        original_content = "original data"
+        file_path.write_text(original_content)
+        
+        def mock_open(*args, **kwargs):
+            raise PermissionError("Access denied")
+        
+        monkeypatch.setattr("builtins.open", mock_open)
+        
+        with pytest.raises(PermissionError):
+            FileHandler.safe_write(str(file_path), "new data")
+        
+        # Состояние файла не должно измениться
+        assert file_path.read_text() == original_content
+    
+    def test_partial_write_does_not_occur(self, tmp_path, monkeypatch):
+        """Частичная запись не должна происходить."""
+        file_path = tmp_path / "partial.txt"
+        
+        write_occurred = False
+        
+        class PartialWriteMock:
+            def __init__(self, *args, **kwargs):
+                self.write_count = 0
+            
+            def __enter__(self):
+                return self
+            
+            def __exit__(self, *args):
+                pass
+            
+            def write(self, data):
+                nonlocal write_occurred
+                write_occurred = True
+                raise OSError("Disk full after partial write")
+            
+            def close(self):
+                pass
+        
+        def mock_open(*args, **kwargs):
+            return PartialWriteMock()
+        
+        monkeypatch.setattr("builtins.open", mock_open)
+        
+        with pytest.raises(OSError, match="Disk full"):
+            FileHandler.safe_write(str(file_path), "large amount of data")
+        
+        # Файл либо не создан, либо содержит исходные данные
+        # В зависимости от реализации
+        if file_path.exists():
+            # Если файл существует, он должен быть пустым или содержать исходные данные
+            content = file_path.read_text()
+            assert content != "large amount of data"
+    
+    def test_rollback_on_failure(self, tmp_path, monkeypatch):
+        """Откат операций при ошибке."""
+        file1 = tmp_path / "file1.txt"
+        file2 = tmp_path / "file2.txt"
+        
+        file1.write_text("data1")
+        
+        call_count = 0
+        
+        def mock_copy(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise PermissionError("Copy failed")
+            return shutil.copy2(*args, **kwargs)
+        
+        monkeypatch.setattr(shutil, "copy2", mock_copy)
+        
+        # Пытаемся выполнить последовательность операций
+        try:
+            FileHandler.copy_file(str(file1), str(tmp_path / "temp.txt"))
+            FileHandler.copy_file(str(file1), str(file2))
+        except PermissionError:
+            pass
+        
+        # Первая операция могла быть выполнена
+        assert (tmp_path / "temp.txt").exists()
+        # Вторая операция не выполнена
+        assert not file2.exists()
+    
+    def test_concurrent_error_handling(self, tmp_path):
+        """Обработка ошибок при конкурентном доступе (имитация)."""
+        import threading
+        
+        file_path = tmp_path / "concurrent.txt"
+        results = []
+        errors = []
+        
+        def worker(worker_id):
+            try:
+                FileHandler.safe_write(str(file_path), f"Worker {worker_id}")
+                results.append(worker_id)
+            except Exception as e:
+                errors.append((worker_id, str(e)))
+        
+        threads = []
+        for i in range(10):
+            t = threading.Thread(target=worker, args=(i,))
+            threads.append(t)
+            t.start()
+        
+        for t in threads:
+            t.join()
+        
+        # Хотя бы один поток должен записать успешно
+        assert len(results) >= 1
+        
+        # Ошибки должны быть корректно обработаны
+        # PermissionError может возникнуть при конкурентной записи
+        # (зависит от ОС и реализации)
+    
+    def test_error_recovery_with_retry(self, tmp_path, monkeypatch):
+        """Восстановление после ошибки с повторной попыткой."""
+        file_path = tmp_path / "recovery.txt"
+        
+        attempt = 0
+        
+        def mock_open_with_retry(*args, **kwargs):
+            nonlocal attempt
+            attempt += 1
+            if attempt < 3:
+                raise OSError(f"Temporary error (attempt {attempt})")
+            return open(*args, **kwargs)
+        
+        monkeypatch.setattr("builtins.open", mock_open_with_retry)
+        
+        # Имитируем логику повторных попыток
+        max_retries = 3
+        last_error = None
+        
+        for retry in range(max_retries):
+            try:
+                result = FileHandler.safe_write(str(file_path), "success")
+                assert result is True
+                break
+            except OSError as e:
+                last_error = e
+                continue
+        
+        if attempt < 3:
+            assert False, "Должна была быть ошибка до успеха"
+        else:
+            assert file_path.exists()
+            assert file_path.read_text() == "success"
+    
+    def test_error_scenario_combinations(self, tmp_path, monkeypatch):
+        """Комбинация различных типов ошибок."""
+        file_path = tmp_path / "combination.txt"
+        
+        # Список ошибок для последовательного воспроизведения
+        errors = [
+            FileNotFoundError,      # Файл не найден
+            PermissionError,        # Нет прав
+            OSError,                # Общая ошибка
+            None                    # Успех
+        ]
+        
+        error_index = 0
+        
+        def mock_open(*args, **kwargs):
+            nonlocal error_index
+            error = errors[error_index]
+            error_index += 1
+            
+            if error is not None:
+                raise error(f"Simulated {error.__name__}")
+            
+            return open(*args, **kwargs)
+        
+        monkeypatch.setattr("builtins.open", mock_open)
+        
+        # Первая попытка: FileNotFoundError
+        with pytest.raises(FileNotFoundError):
+            FileHandler.safe_write(str(file_path), "data")
+        
+        # Вторая попытка: PermissionError
+        with pytest.raises(PermissionError):
+            FileHandler.safe_write(str(file_path), "data")
+        
+        # Третья попытка: OSError
+        with pytest.raises(OSError):
+            FileHandler.safe_write(str(file_path), "data")
+        
+        # Четвёртая попытка: успех
+        result = FileHandler.safe_write(str(file_path), "final")
+        assert result is True
+        assert file_path.read_text() == "final"
+Задание 3.5. Итоговый отчёт (10 минут)
+markdown
+## Отчёт о тестировании обработки ошибок файлового ввода-вывода
+
+**Студент:** _________________
+**Вариант №:** ___ (18-25)
+**Уровень:** Сложный
+
+### Сводная таблица результатов
+
+| Категория тестов | Количество | Пройдено | Не пройдено |
+|:---|:---|:---|:---|
+| safe_read | _____ | _____ | _____ |
+| safe_write | _____ | _____ | _____ |
+| safe_read_json / safe_write_json | _____ | _____ | _____ |
+| copy_file | _____ | _____ | _____ |
+| delete_file | _____ | _____ | _____ |
+| append_to_file | _____ | _____ | _____ |
+| get_file_info | _____ | _____ | _____ |
+| Комплексные сценарии | _____ | _____ | _____ |
+| **Итого** | _____ | _____ | _____ |
+
+### Обработанные типы ошибок
+
+| Тип ошибки | Проверено | Методы |
+|:---|:---|:---|
+| FileNotFoundError | ☐ | |
+| PermissionError | ☐ | |
+| FileExistsError | ☐ | |
+| IsADirectoryError | ☐ | |
+| OSError | ☐ | |
+| json.JSONDecodeError | ☐ | |
+
+### Использованные техники мокирования
+
+| Техника | Где применялась |
+|:---|:---|
+| `monkeypatch.setattr("builtins.open")` | |
+| `monkeypatch.setattr(os.path, "exists")` | |
+| `monkeypatch.setattr(os, "access")` | |
+| `monkeypatch.setattr(os, "makedirs")` | |
+| `monkeypatch.setattr(shutil, "copy2")` | |
+
+### Найденные дефекты
+
+| ID | Описание | Функция | Серьёзность | Статус |
+|:---|:---|:---|:---|:---|
+| BUG-01 | | | | |
+| BUG-02 | | | | |
+| BUG-03 | | | | |
+
+### Выводы
+
+_______________________________________________________________
+
+_______________________________________________________________
+
+_______________________________________________________________
+
+### Рекомендации
+
+1. 
+2. 
+3. 
+
+---
+
+**Дата выполнения:** _____________
+**Подпись студента:** _____________
+**Подпись преподавателя:** _____________
+Карточка студента (итоговая)
+text
+ПР 3.11. ТЕСТИРОВАНИЕ ОБРАБОТКИ ОШИБОК ФАЙЛОВОГО ВВОДА-ВЫВОДА
+
+Вариант № ___
+Уровень: □ Базовый (1-8) □ Средний (9-17) □ Сложный (18-25)
+
+=== ВЫПОЛНЕННЫЕ ЗАДАНИЯ ===
+
+□ safe_read (базовый)
+□ safe_write (базовый)
+□ delete_file (базовый)
+□ get_file_info (базовый)
+□ PermissionError мокирование (средний)
+□ json ошибки (средний)
+□ copy_file (средний)
+□ Комплексные сценарии ошибок (сложный)
+□ Множественные последовательные ошибки (сложный)
+□ Восстановление после ошибок (сложный)
+
+=== ПРОВЕРЕННЫЕ ИСКЛЮЧЕНИЯ ===
+
+□ FileNotFoundError
+□ PermissionError
+□ FileExistsError
+□ OSError
+□ json.JSONDecodeError
+
+=== ИСПОЛЬЗОВАННЫЕ ТЕХНИКИ ===
+
+□ pytest.raises
+□ monkeypatch.setattr (builtins.open)
+□ monkeypatch.setattr (os.path)
+□ monkeypatch.setattr (os.access)
+□ tmp_path фикстура
+
+=== РЕЗУЛЬТАТЫ ===
+
+Всего тестов: _____
+Пройдено: _____
+Не пройдено: _____
+
+Найдено дефектов: _____
+
+=== ВРЕМЯ ВЫПОЛНЕНИЯ ===
+
+Подготовка: _____ мин
+Выполнение: _____ мин
+Оформление: _____ мин
+
+=== ОТЧЁТ ===
+
+Файлы:
+- test_file_handler_base.py
+- test_file_handler_intermediate.py
+- test_file_handler_advanced.py
+
+Дата выполнения: _____________
+Подпись студента: _____________
+Критерии оценки (полная шкала)
+Баллы	Уровень	Критерий
+2 (неудовлетворительно)	Любой	Тесты не работают или не используют pytest.raises
+3 (удовлетворительно)	Базовый	FileNotFoundError + базовые тесты (10+ тестов)
+4 (хорошо)	Средний	+ PermissionError с monkeypatch + JSON + copy (20+ тестов)
+5 (отлично)	Сложный	+ комплексные сценарии + множественные ошибки + восстановление (30+ тестов)
+Следующее занятие: ПР 3.13 — Тестирование иерархий классов и полиморфизма.
